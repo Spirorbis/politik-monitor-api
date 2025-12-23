@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # --- KONFIGURATION ---
 DIP_API_URL = "https://search.dip.bundestag.de/api/v1/vorgang"
-# Wir holen den Key sicher aus den Umgebungsvariablen (erkläre ich gleich)
+# Wir holen den Key aus den Umgebungsvariablen
 API_KEY = os.environ.get("BUNDESTAG_API_KEY") 
 
 # --- HELFER (MAPPING) ---
@@ -43,21 +43,34 @@ def map_type(vorgangstyp):
     else: return "bill"
 
 # --- ROUTE ---
-@app.route('/api/policies') # Vercel leitet Anfragen hierhin
+@app.route('/api/policies')
 def get_policies():
     try:
-        # Parameter für die Bundestag API
+        # WICHTIG: Prüfen ob Key da ist
+        if not API_KEY:
+            return jsonify({"error": "API Key fehlt auf dem Server"}), 500
+
+        # Parameter für die Bundestag API (OHNE Key)
         params = {
             "f.vorgangstyp": "Gesetzgebung",
             "format": "json",
             "limit": 15,
-            "sort": "-aktualisiert",
-            "apikey": API_KEY
+            "sort": "-aktualisiert"
         }
         
-        # Abfrage
-        response = requests.get(DIP_API_URL, params=params)
-        response.raise_for_status() # Wirft Fehler bei schlechtem Status
+        # Authentifizierung über den Header (Besser!)
+        headers = {
+            "Authorization": f"ApiKey {API_KEY}"
+        }
+        
+        # Abfrage mit Headern
+        response = requests.get(DIP_API_URL, params=params, headers=headers)
+        
+        # Wenn der Bundestag 401 sagt, geben wir das weiter
+        if response.status_code == 401:
+             return jsonify({"error": "Bundestag API Key abgelehnt via Header"}), 401
+             
+        response.raise_for_status()
         data = response.json()
         
         swift_items = []
@@ -66,7 +79,6 @@ def get_policies():
         for doc in data.get("documents", []):
             datum_str = doc.get("datum", "2024-01-01")
             
-            # Titel und Abstract bereinigen
             titel = doc.get("titel", "Ohne Titel")
             abstract = doc.get("abstract", "")
             if not abstract: abstract = "Keine Zusammenfassung verfügbar."
@@ -92,7 +104,3 @@ def get_policies():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-# Fallback für lokale Tests
-if __name__ == '__main__':
-    app.run(debug=True)
