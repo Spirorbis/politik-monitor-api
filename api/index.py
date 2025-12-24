@@ -13,15 +13,17 @@ API_KEY = os.environ.get("BUNDESTAG_API_KEY")
 # --- HELFER (MAPPING) ---
 def map_status(vorgang_status):
     st = str(vorgang_status).lower()
-    if "verkündet" in st: return "published"
+    # Reihenfolge ist wichtig: Finales zuerst prüfen!
+    if "verkündet" in st or "bundesgesetzblatt" in st: return "published"
     elif "in kraft" in st: return "effective"
-    elif "unterzeichnet" in st: return "signed"
-    elif "bundesrat" in st and "zugestimmt" in st: return "passedBundesrat"
-    elif "beschlossen" in st or "angenommen" in st: return "passedBundestag"
-    elif "beratung" in st: return "committee"
-    elif "eingebracht" in st: return "draft"
-    elif "erledigt" in st or "abgelehnt" in st: return "stopped"
+    elif "unterzeichnet" in st or "ausgefertigt" in st: return "signed"
+    elif "zugestimmt" in st or "bundesrat" in st: return "passedBundesrat" # Vereinfacht
+    elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: return "passedBundestag"
+    elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st: return "stopped"
+    elif "beratung" in st or "ausschuss" in st or "überwiesen" in st: return "committee"
+    # Alles andere ist erstmal ein Entwurf/Vorlage
     else: return "draft"
+
 
 def map_category(sachgebiet_liste):
     if not sachgebiet_liste: return "other"
