@@ -13,25 +13,37 @@ API_KEY = os.environ.get("BUNDESTAG_API_KEY")
 def map_status(vorgang_status):
     st = str(vorgang_status).lower()
     
-    # 1. Fertige Gesetze
-    if "verkündet" in st or "bundesgesetzblatt" in st: return "published"
-    elif "in kraft" in st: return "effective"
-    elif "unterzeichnet" in st or "ausgefertigt" in st: return "signed"
+    # 1. Fertige Gesetze (Final)
+    if "verkündet" in st or "bundesgesetzblatt" in st or "verkuendet" in st: 
+        return "published"
+    elif "in kraft" in st: 
+        return "effective"
+    elif "unterzeichnet" in st or "ausgefertigt" in st: 
+        return "signed"
     
-    # 2. Beschlüsse
-    elif "zugestimmt" in st or "bundesrat" in st: return "passedBundesrat"
-    elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: return "passedBundestag"
-    elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st or "nicht zustande gekommen" in st: return "stopped"
+    # 2. Beschlüsse (Fortgeschritten)
+    elif "zugestimmt" in st or "bundesrat" in st: 
+        return "passedBundesrat"
+    elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: 
+        return "passedBundestag"
+    elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st or "nicht zustande gekommen" in st: 
+        return "stopped"
         
-    # 3. Arbeitsprozess
-    elif "beratung" in st: return "committee"
-    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: return "committee"
-    elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
-    elif "änderungsantrag" in st or "entschließungsantrag" in st: return "committee"
-    elif "antwort" in st: return "committee" 
+    # 3. Arbeitsprozess (Ausschüsse & Beratungen)
+    elif "beratung" in st: # Erste Beratung, Zweite Beratung...
+        return "committee"
+    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: 
+        return "committee"
+    elif "beschlussempfehlung" in st or "bericht" in st: 
+        return "committee"
+    elif "änderungsantrag" in st or "entschließungsantrag" in st:
+        return "committee"
+    elif "antwort" in st: # Bei Kleinen Anfragen oft "Beantwortet"
+        return "committee" 
         
-    # 4. Fallback (Das greift aktuell wohl zu oft!)
-    else: return "draft"
+    # 4. Alles andere ist ein Entwurf / Vorlage
+    else: 
+        return "draft"
 
 def map_category(sachgebiet_liste):
     if not sachgebiet_liste: return "other"
@@ -76,18 +88,29 @@ def get_policies():
         
         for doc in data.get("documents", []):
             datum_str = doc.get("datum", "2024-01-01")
-            status_raw = doc.get("aktueller_stand", "Unbekannt") # Den holen wir uns jetzt!
             
-            # ### DEBUG MODUS START ###
-            # Wir hängen den rohen Status an den Titel an, damit wir ihn in der App sehen.
+            # --- STATUS DETEKTIV ---
+            # Wir suchen an 3 verschiedenen Orten nach dem Status
+            status_raw = doc.get("beratungsstand", "")
+            
+            if not status_raw:
+                status_raw = doc.get("vorgangsstatus", "")
+                
+            if not status_raw:
+                status_raw = doc.get("aktueller_stand", "")
+                
+            if not status_raw:
+                status_raw = "Kein Status gefunden"
+            # -----------------------
+
+            # DEBUG: Wir schreiben den gefundenen Status wieder in den Titel
             original_titel = doc.get("titel", "Ohne Titel")
-            debug_titel = f"{original_titel} [STATUS: {status_raw}]"
-            # ### DEBUG MODUS ENDE ###
+            debug_titel = f"{original_titel} [{status_raw}]"
 
             item = {
                 "id": doc.get("id", "unknown"),
-                "officialTitle": debug_titel, # Hier nutzen wir den Debug-Titel
-                "simpleTitle": debug_titel,   # Und hier auch
+                "officialTitle": debug_titel, 
+                "simpleTitle": debug_titel,   
                 "summary": doc.get("abstract", "Keine Zusammenfassung."),
                 "institution": "bundestag",
                 "type": map_type(doc.get("vorgangstyp", "")),
