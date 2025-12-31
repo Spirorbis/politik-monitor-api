@@ -15,6 +15,11 @@ BVERFG_RSS_URL = "https://www.bundesverfassungsgericht.de/SiteGlobals/Functions/
 
 API_KEY = os.environ.get("BUNDESTAG_API_KEY") 
 
+# WICHTIG: Der "Ausweis" für die Regierungs-Server
+RSS_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 # --- HELFER (MAPPING) ---
 def map_bundestag_status(vorgang_status):
     st = str(vorgang_status).lower()
@@ -26,7 +31,7 @@ def map_bundestag_status(vorgang_status):
     elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st or "nicht zustande gekommen" in st: return "stopped"
     elif "beratung" in st: return "committee"
     elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: return "committee"
-    elif "bundesrat" in st: return "committee" # Nur Zuleitung
+    elif "bundesrat" in st: return "committee" 
     elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
     elif "änderungsantrag" in st or "entschließungsantrag" in st: return "committee"
     elif "antwort" in st: return "committee" 
@@ -64,12 +69,10 @@ def fetch_bundestag():
         for doc in resp.json().get("documents", []):
             datum_str = doc.get("datum", "2025-01-01")
             
-            # Status Logic
             status_raw = doc.get("beratungsstand", "")
             if not status_raw: status_raw = doc.get("vorgangsstatus", "")
             if not status_raw: status_raw = doc.get("aktueller_stand", "Entwurf")
 
-            # Title Logic
             raw_title = doc.get("titel", "Ohne Titel")
             simple_title = raw_title
             match = re.search(r'\((.*?gesetz.*?)\)', raw_title, re.IGNORECASE)
@@ -93,22 +96,27 @@ def fetch_bundestag():
             }
             items.append(item)
         return items
-    except: return []
+    except Exception as e:
+        # Falls Bundestag fehlschlägt, geben wir das als Error-Item zurück (optional)
+        print(f"Bundestag Error: {e}")
+        return []
 
 def fetch_bundesregierung():
     try:
-        resp = requests.get(BREG_RSS_URL, timeout=5)
-        if resp.status_code != 200: return []
+        # HIER WAR DAS PROBLEM: Wir brauchen Headers!
+        resp = requests.get(BREG_RSS_URL, headers=RSS_HEADERS, timeout=10)
+        
+        if resp.status_code != 200:
+            print(f"BREG Status Code: {resp.status_code}")
+            return []
         
         root = ET.fromstring(resp.content)
         items = []
         
-        # XML Namespace Handling ist in Python manchmal tricky, wir iterieren simpel
-        for entry in root.findall('./channel/item')[:5]: # Nur die neuesten 5
+        for entry in root.findall('./channel/item')[:5]:
             title = entry.find('title').text if entry.find('title') is not None else "Ohne Titel"
             desc = entry.find('description').text if entry.find('description') is not None else ""
             
-            # Datum parsen (RFC 822 Format)
             pub_date_str = entry.find('pubDate').text
             try:
                 dt = parsedate_to_datetime(pub_date_str)
@@ -116,8 +124,7 @@ def fetch_bundesregierung():
             except:
                 iso_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            # HTML Tags aus Beschreibung entfernen
-            clean_desc = re.sub('<[^<]+?>', '', desc)[:200] + "..."
+            clean_desc = re.sub('<[^<]+?>', '', desc)[:250] + "..."
 
             item = {
                 "id": f"breg-{hash(title)}",
@@ -125,11 +132,11 @@ def fetch_bundesregierung():
                 "simpleTitle": title,
                 "summary": clean_desc,
                 "institution": "bundesregierung",
-                "type": "motion", # Pressemitteilungen sind meist Initiativen/Ankündigungen
+                "type": "motion",
                 "category": map_category(title + " " + desc),
                 "datePublished": iso_date,
                 "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "status": "published", # Pressemitteilungen sind "veröffentlicht"
+                "status": "published",
                 "progress": 1.0,
                 "isBookmarked": False,
                 "voteResult": None
@@ -138,19 +145,38 @@ def fetch_bundesregierung():
         return items
     except Exception as e:
         print(f"Error BREG: {e}")
-        return []
+        # Debug Item für die App, damit du den Fehler siehst
+        return [{
+            "id": "error-breg",
+            "officialTitle": f"Fehler Regierung: {str(e)}",
+            "simpleTitle": "Ladefehler Regierung",
+            "summary": "Daten konnten nicht geladen werden.",
+            "institution": "bundesregierung",
+            "type": "motion",
+            "category": "other",
+            "datePublished": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "status": "stopped",
+            "progress": 0.0,
+            "isBookmarked": False,
+            "voteResult": None
+        }]
 
 def fetch_bverfg():
     try:
-        resp = requests.get(BVERFG_RSS_URL, timeout=5)
-        if resp.status_code != 200: return []
+        # Auch hier Headers!
+        resp = requests.get(BVERFG_RSS_URL, headers=RSS_HEADERS, timeout=10)
+        
+        if resp.status_code != 200: 
+            return []
         
         root = ET.fromstring(resp.content)
         items = []
         
         for entry in root.findall('./channel/item')[:5]:
             title = entry.find('title').text
-            desc = entry.find('description').text
+            # BVerfG hat oft keine Description im RSS, Titel reicht oft
+            desc = entry.find('description').text if entry.find('description') is not None else title
             pub_date_str = entry.find('pubDate').text
             
             try:
@@ -162,14 +188,14 @@ def fetch_bverfg():
             item = {
                 "id": f"bverfg-{hash(title)}",
                 "officialTitle": title,
-                "simpleTitle": "Urteil / Entscheidung", # Oft sind Titel beim Gericht Aktenzeichen
-                "summary": title, # Beim BVerfG ist der Titel oft die Zusammenfassung
+                "simpleTitle": "Entscheidung / Urteil",
+                "summary": title, # Titel ist meist aussagekräftig genug
                 "institution": "bundesverfassungsgericht",
                 "type": "ruling",
                 "category": map_category(title),
                 "datePublished": iso_date,
                 "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "status": "effective", # Urteile sind sofort wirksam
+                "status": "effective",
                 "progress": 1.0,
                 "isBookmarked": False,
                 "voteResult": None
@@ -184,17 +210,15 @@ def fetch_bverfg():
 @app.route('/api/policies')
 def get_policies():
     try:
-        # 1. Daten aus allen Quellen holen
         bt_items = fetch_bundestag()
         breg_items = fetch_bundesregierung()
         bverfg_items = fetch_bverfg()
         
-        # 2. Zusammenfügen
         all_items = bt_items + breg_items + bverfg_items
         
-        # 3. Sortieren (Neuestes oben)
-        # Wir müssen sicherstellen, dass das Datum parslich ist, sonst Fallback
-        all_items.sort(key=lambda x: x['datePublished'], reverse=True)
+        # Sortieren nach Datum (neueste zuerst)
+        # Fallback falls Datum Parsen scheitert: String vergleich (nicht optimal aber crasht nicht)
+        all_items.sort(key=lambda x: x.get('datePublished', ''), reverse=True)
         
         return jsonify(all_items)
 
