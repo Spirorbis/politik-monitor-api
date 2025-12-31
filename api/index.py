@@ -2,6 +2,7 @@ from flask import Flask, jsonify
 import requests
 from datetime import datetime
 import os
+import re # Neu: Für Text-Säuberung
 
 app = Flask(__name__)
 
@@ -13,39 +14,28 @@ API_KEY = os.environ.get("BUNDESTAG_API_KEY")
 def map_status(vorgang_status):
     st = str(vorgang_status).lower()
     
-    # --- 1. FINAL / ABGESCHLOSSEN ---
     if "verkündet" in st or "bundesgesetzblatt" in st or "verkuendet" in st: 
         return "published"
     elif "in kraft" in st: 
         return "effective"
     elif "unterzeichnet" in st or "ausgefertigt" in st: 
         return "signed"
+    elif "zugestimmt" in st or "bundesrat" in st: 
+        return "passedBundesrat"
+    elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: 
+        return "passedBundestag"
     elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st or "nicht zustande gekommen" in st: 
         return "stopped"
-
-    # --- 2. BESCHLÜSSE (Meilensteine) ---
-    # WICHTIG: Nur wenn explizit "zugestimmt" dabei steht!
-    elif "bundesrat" in st and "zugestimmt" in st: 
-        return "passedBundesrat"
-    # Bundestag beschlossen
-    elif "bundestag" in st and ("angenommen" in st or "beschlossen" in st or "verabschiedet" in st): 
-        return "passedBundestag"
-    elif "zweite beratung" in st and "dritte beratung" in st: # Oft gleichbedeutend mit Abschluss im BT
-        return "passedBundestag"
-
-    # --- 3. IN ARBEIT (Ausschuss / Beratung / Zuleitung) ---
-    # Alles was "zugeleitet", "überwiesen" oder "beraten" wird
-    elif "beratung" in st: return "committee"
-    elif "ausschuss" in st: return "committee"
-    elif "überwiesen" in st or "überweisung" in st: return "committee"
-    elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
-    elif "änderungsantrag" in st or "entschließungsantrag" in st: return "committee"
-    elif "antwort" in st: return "committee"
-    # Hier fangen wir "Dem Bundesrat zugeleitet" ab -> Das ist Arbeitsprozess (Gelb)
-    elif "zugeleitet" in st or "zuleitung" in st: return "committee"
-    elif "vorlage" in st: return "committee"
-        
-    # --- 4. START (Entwurf) ---
+    elif "beratung" in st: 
+        return "committee"
+    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: 
+        return "committee"
+    elif "beschlussempfehlung" in st or "bericht" in st: 
+        return "committee"
+    elif "änderungsantrag" in st or "entschließungsantrag" in st:
+        return "committee"
+    elif "antwort" in st: 
+        return "committee" 
     else: 
         return "draft"
 
@@ -93,27 +83,39 @@ def get_policies():
         for doc in data.get("documents", []):
             datum_str = doc.get("datum", "2024-01-01")
             
-            # --- STATUS DETEKTIV ---
-            # Wir prüfen der Reihe nach, wo der Status steht
+            # 1. Status ermitteln (Der Detektiv)
             status_raw = doc.get("beratungsstand", "")
             if not status_raw: status_raw = doc.get("vorgangsstatus", "")
             if not status_raw: status_raw = doc.get("aktueller_stand", "Entwurf")
+
+            # 2. Titel säubern
+            # Wir nehmen den offiziellen Titel
+            raw_title = doc.get("titel", "Ohne Titel")
             
-            # Titel sauber auslesen
-            titel = doc.get("titel", "Ohne Titel")
+            # Kleiner Trick: Oft steht der Kurztitel in Klammern am Ende, z.B. "...(Gute-Kita-Gesetz)"
+            # Wir versuchen, das herauszufiltern für den "Simple Title"
+            simple_title = raw_title
+            match = re.search(r'\((.*?gesetz.*?)\)', raw_title, re.IGNORECASE)
+            if match:
+                # Wenn wir was in Klammern finden (z.B. Wachstumschancengesetz), nehmen wir das als Kurztitel
+                simple_title = match.group(1)
             
+            # Falls der Titel zu lang ist und wir nichts kurzes fanden, kürzen wir hart (optional)
+            if len(simple_title) > 100 and simple_title == raw_title:
+                 simple_title = raw_title[:97] + "..."
+
             item = {
                 "id": doc.get("id", "unknown"),
-                "officialTitle": titel, # Voller Titel
-                "simpleTitle": titel,   # Vor erst identisch (Kürzung bräuchte KI)
-                "summary": doc.get("abstract", "Keine Zusammenfassung."),
+                "officialTitle": raw_title,   # Der volle, lange, juristische Titel
+                "simpleTitle": simple_title,  # Der (hoffentlich) kurze Titel
+                "summary": doc.get("abstract", "Keine Zusammenfassung verf\u00fcgbar."),
                 "institution": "bundestag",
                 "type": map_type(doc.get("vorgangstyp", "")),
                 "category": map_category(doc.get("sachgebiet", [])),
                 "datePublished": f"{datum_str}T09:00:00Z", 
                 "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "status": map_status(status_raw),
-                "progress": 0.5, # Wird in Swift berechnet
+                "progress": 0.5, # Wird in der App ignoriert, da berechnet
                 "isBookmarked": False,
                 "voteResult": None
             }
