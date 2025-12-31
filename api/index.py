@@ -11,15 +11,14 @@ app = Flask(__name__)
 # --- KONFIGURATION ---
 DIP_API_URL = "https://search.dip.bundestag.de/api/v1/vorgang"
 
-# KORRIGIERT: Zurück zur Standard-URL (die existiert), aber mit Headern
-BREG_RSS_URL = "https://www.bundesregierung.de/service/rss/breg-de/pressemitteilungen"
+# NEU: Wir nutzen den "Aktuelles" Feed, der ist am stabilsten
+BREG_RSS_URL = "https://www.bundesregierung.de/service/rss/breg-de/aktuelles"
 
-# KORRIGIERT: Tippfehler entfernt (kein Bindestrich bei bundesverfassungsgericht)
+# NEU: Tippfehler in Domain korrigiert!
 BVERFG_RSS_URL = "https://www.bundesverfassungsgericht.de/SiteGlobals/Functions/RSS/Pressemitteilungen/RSS_Pressemitteilungen.xml"
 
 API_KEY = os.environ.get("BUNDESTAG_API_KEY") 
 
-# WICHTIG: Headers um Browser zu simulieren
 RSS_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
@@ -46,24 +45,36 @@ def create_error_item(source_name, error_msg):
 
 def map_bundestag_status(vorgang_status):
     st = str(vorgang_status).lower()
-    if "verkündet" in st or "bundesgesetzblatt" in st: return "published"
+    
+    # 1. Final
+    if "verkündet" in st or "bundesgesetzblatt" in st or "verkuendet" in st: return "published"
     elif "in kraft" in st: return "effective"
-    elif "unterzeichnet" in st: return "signed"
+    elif "unterzeichnet" in st or "ausgefertigt" in st: return "signed"
+    
+    # 2. Beschlossen (Nur wenn wirklich zugestimmt!)
     elif "bundesrat" in st and "zugestimmt" in st: return "passedBundesrat"
     elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: return "passedBundestag"
-    elif "abgelehnt" in st or "erledigt" in st: return "stopped"
-    elif "beratung" in st or "ausschuss" in st: return "committee"
+    elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st: return "stopped"
+    
+    # 3. In Arbeit (Ausschuss, Beratung, Zuleitung)
+    elif "beratung" in st: return "committee"
+    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: return "committee"
+    elif "bundesrat" in st: return "committee" # Zuleitung an BR ist noch Arbeit
+    elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
+    elif "änderungsantrag" in st: return "committee"
+    
+    # 4. Fallback
     else: return "draft"
 
 def map_category(text):
     t = str(text).lower()
     if "wirtschaft" in t or "finan" in t: return "economy"
     elif "umwelt" in t or "klima" in t: return "environment"
-    elif "sozial" in t or "rente" in t: return "social"
-    elif "digital" in t: return "digital"
+    elif "sozial" in t or "rente" in t or "arbeit" in t: return "social"
+    elif "digital" in t or "internet" in t: return "digital"
     elif "recht" in t or "innere" in t: return "justice"
-    elif "verteidigung" in t: return "defense"
-    elif "gesundheit" in t: return "health"
+    elif "verteidigung" in t or "wehr" in t: return "defense"
+    elif "gesundheit" in t or "pflege" in t: return "health"
     else: return "other"
 
 def map_type_bundestag(vorgangstyp):
@@ -76,7 +87,7 @@ def map_type_bundestag(vorgangstyp):
 # --- QUELLEN ---
 
 def fetch_bundestag():
-    if not API_KEY: return []
+    if not API_KEY: return [create_error_item("Bundestag", "API Key fehlt")]
     try:
         params = { "f.vorgangstyp": "Gesetzgebung", "format": "json", "limit": 15, "sort": "-aktualisiert" }
         headers = { "Authorization": f"ApiKey {API_KEY}" }
@@ -86,13 +97,19 @@ def fetch_bundestag():
         
         items = []
         for doc in resp.json().get("documents", []):
+            # ECHTES DATUM VERWENDEN
             datum_str = doc.get("datum", "2025-01-01")
             
+            # STATUS DETEKTIV
             status_raw = doc.get("beratungsstand", "")
             if not status_raw: status_raw = doc.get("vorgangsstatus", "")
             if not status_raw: status_raw = doc.get("aktueller_stand", "Entwurf")
 
+            # TITEL MIT DEBUG INFO
             raw_title = doc.get("titel", "Ohne Titel")
+            debug_title = f"{raw_title} [{status_raw}]" # <--- HIER IST DIE DEBUG INFO
+            
+            # Kurztitel Suche
             simple_title = raw_title
             match = re.search(r'\((.*?gesetz.*?)\)', raw_title, re.IGNORECASE)
             if match: simple_title = match.group(1)
@@ -100,14 +117,15 @@ def fetch_bundestag():
 
             item = {
                 "id": f"bt-{doc.get('id', '0')}",
-                "officialTitle": raw_title,
+                "officialTitle": debug_title, # Zeigt Debug Titel
                 "simpleTitle": simple_title,
                 "summary": doc.get("abstract", "Keine Zusammenfassung."),
                 "institution": "bundestag",
                 "type": map_type_bundestag(doc.get("vorgangstyp", "")),
                 "category": map_category(doc.get("sachgebiet", [])),
                 "datePublished": f"{datum_str}T09:00:00Z", 
-                "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                # WICHTIG: lastUpdated ist jetzt das echte Datum, nicht 'jetzt'
+                "lastUpdated": f"{datum_str}T09:00:00Z", 
                 "status": map_bundestag_status(status_raw),
                 "progress": 0.5,
                 "isBookmarked": False,
@@ -120,24 +138,19 @@ def fetch_bundestag():
 
 def fetch_bundesregierung():
     try:
-        # Timeout erhöht auf 15 Sekunden
         resp = requests.get(BREG_RSS_URL, headers=RSS_HEADERS, timeout=15)
+        if resp.status_code != 200: return [create_error_item("Regierung", str(resp.status_code))]
         
-        if resp.status_code != 200:
-            return [create_error_item("Regierung", str(resp.status_code))]
-        
-        # XML Encoding Fix: Manchmal kommt falsches Encoding, wir erzwingen utf-8
         resp.encoding = 'utf-8'
         root = ET.fromstring(resp.content)
         items = []
+        rss_items = root.findall('.//item') # Flexible Suche
         
-        rss_items = root.findall('.//item')
-        if not rss_items: return []
-
         for entry in rss_items[:4]:
-            title = entry.find('title').text or "Pressemitteilung"
+            title = entry.find('title').text or "Nachricht"
             desc = entry.find('description').text or ""
             
+            # Datum Parsen
             iso_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
             pub_date = entry.find('pubDate')
             if pub_date is not None:
@@ -146,7 +159,7 @@ def fetch_bundesregierung():
                     iso_date = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                 except: pass
 
-            clean_desc = re.sub('<[^<]+?>', '', desc)[:200] + "..."
+            clean_desc = re.sub('<[^<]+?>', '', desc)[:250] + "..."
 
             item = {
                 "id": f"breg-{hash(title)}",
@@ -157,7 +170,7 @@ def fetch_bundesregierung():
                 "type": "motion",
                 "category": map_category(title + " " + desc),
                 "datePublished": iso_date,
-                "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "lastUpdated": iso_date, # Echtes Datum
                 "status": "published",
                 "progress": 1.0,
                 "isBookmarked": False,
@@ -170,11 +183,8 @@ def fetch_bundesregierung():
 
 def fetch_bverfg():
     try:
-        # Timeout erhöht auf 15 Sekunden
         resp = requests.get(BVERFG_RSS_URL, headers=RSS_HEADERS, timeout=15)
-        
-        if resp.status_code != 200: 
-            return [create_error_item("Gericht", str(resp.status_code))]
+        if resp.status_code != 200: return [create_error_item("Gericht", str(resp.status_code))]
         
         resp.encoding = 'utf-8'
         root = ET.fromstring(resp.content)
@@ -201,7 +211,7 @@ def fetch_bverfg():
                 "type": "ruling",
                 "category": map_category(title),
                 "datePublished": iso_date,
-                "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "lastUpdated": iso_date, # Echtes Datum
                 "status": "effective",
                 "progress": 1.0,
                 "isBookmarked": False,
@@ -222,6 +232,7 @@ def get_policies():
         
         all_items = bt_items + breg_items + bverfg_items
         
+        # Sortieren nach Datum (neueste zuerst)
         all_items.sort(key=lambda x: x.get('datePublished', ''), reverse=True)
         
         return jsonify(all_items)
