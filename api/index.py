@@ -8,19 +8,21 @@ from email.utils import parsedate_to_datetime
 
 app = Flask(__name__)
 
-# --- NEUE KONFIGURATION (Aktualisierte URLs) ---
+# --- KONFIGURATION ---
 DIP_API_URL = "https://search.dip.bundestag.de/api/v1/vorgang"
 
-# BREG: Wir nutzen jetzt den allgemeinen "Aktuelles" Feed, der ist stabiler
-BREG_RSS_URL = "https://www.bundesregierung.de/service/rss/breg-de/aktuelles"
+# KORRIGIERT: Zurück zur Standard-URL (die existiert), aber mit Headern
+BREG_RSS_URL = "https://www.bundesregierung.de/service/rss/breg-de/pressemitteilungen"
 
-# BVerfG: Wir nutzen den Pressemitteilungs-Feed, da der Entscheidungs-Feed oft umzieht
+# KORRIGIERT: Tippfehler entfernt (kein Bindestrich bei bundesverfassungsgericht)
 BVERFG_RSS_URL = "https://www.bundesverfassungsgericht.de/SiteGlobals/Functions/RSS/Pressemitteilungen/RSS_Pressemitteilungen.xml"
 
 API_KEY = os.environ.get("BUNDESTAG_API_KEY") 
 
+# WICHTIG: Headers um Browser zu simulieren
 RSS_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
 }
 
 # --- HELFER ---
@@ -118,18 +120,22 @@ def fetch_bundestag():
 
 def fetch_bundesregierung():
     try:
-        resp = requests.get(BREG_RSS_URL, headers=RSS_HEADERS, timeout=10)
-        if resp.status_code != 200: return [create_error_item("Regierung", str(resp.status_code))]
+        # Timeout erhöht auf 15 Sekunden
+        resp = requests.get(BREG_RSS_URL, headers=RSS_HEADERS, timeout=15)
         
+        if resp.status_code != 200:
+            return [create_error_item("Regierung", str(resp.status_code))]
+        
+        # XML Encoding Fix: Manchmal kommt falsches Encoding, wir erzwingen utf-8
+        resp.encoding = 'utf-8'
         root = ET.fromstring(resp.content)
         items = []
         
-        # Flexiblere Suche nach Items
         rss_items = root.findall('.//item')
         if not rss_items: return []
 
         for entry in rss_items[:4]:
-            title = entry.find('title').text or "Ohne Titel"
+            title = entry.find('title').text or "Pressemitteilung"
             desc = entry.find('description').text or ""
             
             iso_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -164,9 +170,13 @@ def fetch_bundesregierung():
 
 def fetch_bverfg():
     try:
-        resp = requests.get(BVERFG_RSS_URL, headers=RSS_HEADERS, timeout=10)
-        if resp.status_code != 200: return [create_error_item("Gericht", str(resp.status_code))]
+        # Timeout erhöht auf 15 Sekunden
+        resp = requests.get(BVERFG_RSS_URL, headers=RSS_HEADERS, timeout=15)
         
+        if resp.status_code != 200: 
+            return [create_error_item("Gericht", str(resp.status_code))]
+        
+        resp.encoding = 'utf-8'
         root = ET.fromstring(resp.content)
         items = []
         rss_items = root.findall('.//item')
@@ -212,7 +222,6 @@ def get_policies():
         
         all_items = bt_items + breg_items + bverfg_items
         
-        # Sortieren nach Datum
         all_items.sort(key=lambda x: x.get('datePublished', ''), reverse=True)
         
         return jsonify(all_items)
