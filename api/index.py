@@ -13,35 +13,39 @@ API_KEY = os.environ.get("BUNDESTAG_API_KEY")
 def map_status(vorgang_status):
     st = str(vorgang_status).lower()
     
-    # 1. Fertige Gesetze (Final)
+    # --- 1. FINAL / ABGESCHLOSSEN ---
     if "verkündet" in st or "bundesgesetzblatt" in st or "verkuendet" in st: 
         return "published"
     elif "in kraft" in st: 
         return "effective"
     elif "unterzeichnet" in st or "ausgefertigt" in st: 
         return "signed"
-    
-    # 2. Beschlüsse (Fortgeschritten)
-    elif "zugestimmt" in st or "bundesrat" in st: 
-        return "passedBundesrat"
-    elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: 
-        return "passedBundestag"
     elif "abgelehnt" in st or "erledigt" in st or "zurückgezogen" in st or "nicht zustande gekommen" in st: 
         return "stopped"
+
+    # --- 2. BESCHLÜSSE (Meilensteine) ---
+    # WICHTIG: Nur wenn explizit "zugestimmt" dabei steht!
+    elif "bundesrat" in st and "zugestimmt" in st: 
+        return "passedBundesrat"
+    # Bundestag beschlossen
+    elif "bundestag" in st and ("angenommen" in st or "beschlossen" in st or "verabschiedet" in st): 
+        return "passedBundestag"
+    elif "zweite beratung" in st and "dritte beratung" in st: # Oft gleichbedeutend mit Abschluss im BT
+        return "passedBundestag"
+
+    # --- 3. IN ARBEIT (Ausschuss / Beratung / Zuleitung) ---
+    # Alles was "zugeleitet", "überwiesen" oder "beraten" wird
+    elif "beratung" in st: return "committee"
+    elif "ausschuss" in st: return "committee"
+    elif "überwiesen" in st or "überweisung" in st: return "committee"
+    elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
+    elif "änderungsantrag" in st or "entschließungsantrag" in st: return "committee"
+    elif "antwort" in st: return "committee"
+    # Hier fangen wir "Dem Bundesrat zugeleitet" ab -> Das ist Arbeitsprozess (Gelb)
+    elif "zugeleitet" in st or "zuleitung" in st: return "committee"
+    elif "vorlage" in st: return "committee"
         
-    # 3. Arbeitsprozess (Ausschüsse & Beratungen)
-    elif "beratung" in st: # Erste Beratung, Zweite Beratung...
-        return "committee"
-    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: 
-        return "committee"
-    elif "beschlussempfehlung" in st or "bericht" in st: 
-        return "committee"
-    elif "änderungsantrag" in st or "entschließungsantrag" in st:
-        return "committee"
-    elif "antwort" in st: # Bei Kleinen Anfragen oft "Beantwortet"
-        return "committee" 
-        
-    # 4. Alles andere ist ein Entwurf / Vorlage
+    # --- 4. START (Entwurf) ---
     else: 
         return "draft"
 
@@ -90,27 +94,18 @@ def get_policies():
             datum_str = doc.get("datum", "2024-01-01")
             
             # --- STATUS DETEKTIV ---
-            # Wir suchen an 3 verschiedenen Orten nach dem Status
+            # Wir prüfen der Reihe nach, wo der Status steht
             status_raw = doc.get("beratungsstand", "")
+            if not status_raw: status_raw = doc.get("vorgangsstatus", "")
+            if not status_raw: status_raw = doc.get("aktueller_stand", "Entwurf")
             
-            if not status_raw:
-                status_raw = doc.get("vorgangsstatus", "")
-                
-            if not status_raw:
-                status_raw = doc.get("aktueller_stand", "")
-                
-            if not status_raw:
-                status_raw = "Kein Status gefunden"
-            # -----------------------
-
-            # DEBUG: Wir schreiben den gefundenen Status wieder in den Titel
-            original_titel = doc.get("titel", "Ohne Titel")
-            debug_titel = f"{original_titel} [{status_raw}]"
-
+            # Titel sauber auslesen
+            titel = doc.get("titel", "Ohne Titel")
+            
             item = {
                 "id": doc.get("id", "unknown"),
-                "officialTitle": debug_titel, 
-                "simpleTitle": debug_titel,   
+                "officialTitle": titel, # Voller Titel
+                "simpleTitle": titel,   # Vor erst identisch (Kürzung bräuchte KI)
                 "summary": doc.get("abstract", "Keine Zusammenfassung."),
                 "institution": "bundestag",
                 "type": map_type(doc.get("vorgangstyp", "")),
@@ -118,7 +113,7 @@ def get_policies():
                 "datePublished": f"{datum_str}T09:00:00Z", 
                 "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "status": map_status(status_raw),
-                "progress": 0.5,
+                "progress": 0.5, # Wird in Swift berechnet
                 "isBookmarked": False,
                 "voteResult": None
             }
