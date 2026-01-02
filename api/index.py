@@ -22,8 +22,7 @@ def map_status(vorgang_status):
     elif "unterzeichnet" in st or "ausgefertigt" in st: 
         return "signed"
     
-    # 2. Beschlüsse (Blau) - HIER WAR DER FEHLER
-    # Nur wenn wirklich zugestimmt/beschlossen wurde!
+    # 2. Beschlüsse (Blau) - Nur wenn wirklich fertig!
     elif "bundesrat" in st and "zugestimmt" in st: 
         return "passedBundesrat"
     elif "beschlossen" in st or "angenommen" in st or "verabschiedet" in st: 
@@ -32,23 +31,13 @@ def map_status(vorgang_status):
         return "stopped"
         
     # 3. Arbeitsprozess (Gelb)
-    # Alles was im Bundesrat ist aber noch nicht zugestimmt, ist auch Arbeit
-    elif "beratung" in st: 
-        return "committee"
-    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: 
-        return "committee"
-    elif "bundesrat" in st: # Zuleitung an Bundesrat etc.
-        return "committee"
-    elif "beschlussempfehlung" in st or "bericht" in st: 
-        return "committee"
-    elif "änderungsantrag" in st or "entschließungsantrag" in st:
-        return "committee"
-    elif "antwort" in st: 
-        return "committee" 
-        
-    # 4. Entwurf (Orange)
-    else: 
-        return "draft"
+    elif "beratung" in st: return "committee"
+    elif "ausschuss" in st or "überwiesen" in st or "überweisung" in st or "zuweisung" in st: return "committee"
+    elif "bundesrat" in st: return "committee" # Zuleitung ist noch Arbeit
+    elif "beschlussempfehlung" in st or "bericht" in st: return "committee"
+    elif "änderungsantrag" in st or "entschließungsantrag" in st: return "committee"
+    elif "antwort" in st: return "committee" 
+    else: return "draft"
 
 def map_category(sachgebiet_liste):
     if not sachgebiet_liste: return "other"
@@ -92,9 +81,9 @@ def get_policies():
         swift_items = []
         
         for doc in data.get("documents", []):
-            datum_str = doc.get("datum", "2024-01-01")
+            datum_str = doc.get("datum", "2025-01-01")
             
-            # Status Detektiv (behalten wir bei, da er funktioniert hat)
+            # Status Detektiv
             status_raw = doc.get("beratungsstand", "")
             if not status_raw: status_raw = doc.get("vorgangsstatus", "")
             if not status_raw: status_raw = doc.get("aktueller_stand", "Entwurf")
@@ -108,20 +97,22 @@ def get_policies():
             if match:
                 simple_title = match.group(1)
             
-            # Hard Cut fallback falls immer noch zu lang
             if len(simple_title) > 100 and simple_title == raw_title:
                  simple_title = raw_title[:97] + "..."
 
+            # DEBUG: Status wieder in Titel schreiben, wie gewünscht
+            debug_title = f"{raw_title} [STATUS: {status_raw}]"
+
             item = {
                 "id": doc.get("id", "unknown"),
-                "officialTitle": raw_title,
+                "officialTitle": debug_title, # Hier ist der Debug-Titel
                 "simpleTitle": simple_title,
-                "summary": doc.get("abstract", "Keine Zusammenfassung verf\u00fcgbar."),
+                "summary": doc.get("abstract", "Keine Zusammenfassung."),
                 "institution": "bundestag",
                 "type": map_type(doc.get("vorgangstyp", "")),
                 "category": map_category(doc.get("sachgebiet", [])),
                 "datePublished": f"{datum_str}T09:00:00Z", 
-                "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "lastUpdated": f"{datum_str}T09:00:00Z", # Echtes Datum
                 "status": map_status(status_raw),
                 "progress": 0.5,
                 "isBookmarked": False,
